@@ -1,13 +1,27 @@
-# pi-provider-vertex-anthropic
+# @klutometis/pi-provider-vertex-anthropic
 
-[![npm version](https://img.shields.io/npm/v/pi-provider-vertex-anthropic.svg)](https://npmjs.com/package/pi-provider-vertex-anthropic)
-[![license](https://img.shields.io/npm/l/pi-provider-vertex-anthropic.svg)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/@klutometis/pi-provider-vertex-anthropic.svg)](https://npmjs.com/package/@klutometis/pi-provider-vertex-anthropic)
+[![license](https://img.shields.io/npm/l/@klutometis/pi-provider-vertex-anthropic.svg)](LICENSE)
+
+Fork of [`pi-provider-vertex-anthropic`](https://github.com/danielcherubini/pi-provider-vertex-anthropic).
+
+## Why this fork exists
+
+This scoped package carries local Vertex/Claude fixes while the upstream pull request is pending. In particular, Claude Opus 4.7 on Vertex requires adaptive thinking:
+
+- `thinking.type = "adaptive"`
+- `output_config.effort = "low" | "medium" | "high" | "max"`
+
+rather than the older `thinking.type = "enabled"` payload shape. The fork also registers Claude 4.7 / 4.6-family model metadata and opts 1M-context models into the Anthropic `context-1m-2025-08-07` beta header.
+
+This package is intended as a pinned bootstrap dependency for my Pi installs until equivalent support lands upstream.
+
 
 A [Pi](https://github.com/nichochar/pi) provider plugin that gives you access to Claude models through **Google Cloud Vertex AI**. Use your existing GCP billing, stay within your organisation's cloud perimeter, and take advantage of regional deployments -- all from inside Pi.
 
 ## Features
 
-- **10 Claude models** from Opus 4.6 down to Haiku 3, including extended thinking
+- **Claude models** from Opus 4.7 down to Haiku 3, including extended/adaptive thinking
 - **Streaming** via Vertex AI's `streamRawPredict` endpoint with full SSE support
 - **Prompt caching** with automatic ephemeral cache control
 - **Multiple auth strategies** -- service account, Application Default Credentials, or the `gcloud` CLI
@@ -27,7 +41,7 @@ A [Pi](https://github.com/nichochar/pi) provider plugin that gives you access to
 Install using the Pi extension manager:
 
 ```bash
-pi install npm:pi-provider-vertex-anthropic
+pi install npm:@klutometis/pi-provider-vertex-anthropic
 ```
 
 The provider registers automatically and will be available the next time you start Pi.
@@ -78,7 +92,7 @@ To set a Vertex model as your default, add to `~/.pi/agent/settings.json`:
 
 ```json
 {
-  "packages": ["npm:pi-provider-vertex-anthropic"],
+  "packages": ["npm:@klutometis/pi-provider-vertex-anthropic"],
   "defaultProvider": "vertex-anthropic",
   "defaultModel": "claude-sonnet-4-5@20250929",
   "enabledModels": [
