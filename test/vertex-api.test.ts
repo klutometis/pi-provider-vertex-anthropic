@@ -25,6 +25,8 @@ describe('useAdaptiveThinking', () => {
     expect(useAdaptiveThinking('claude-opus-4-6')).toBe(true)
     expect(useAdaptiveThinking('claude-opus-4-7')).toBe(true)
     expect(useAdaptiveThinking('claude-opus-4-7@default')).toBe(true)
+    expect(useAdaptiveThinking('claude-opus-4-8')).toBe(true)
+    expect(useAdaptiveThinking('claude-opus-4-8@default')).toBe(true)
     expect(useAdaptiveThinking('claude-sonnet-4-6')).toBe(true)
     expect(useAdaptiveThinking('claude-haiku-4-10')).toBe(true)
   })

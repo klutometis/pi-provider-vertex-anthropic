@@ -22,6 +22,19 @@ export interface VertexModel {
  */
 export const VERTEX_MODELS: VertexModel[] = [
   {
+    id: 'claude-opus-4-8@default',
+    name: 'Claude Opus 4.8 (Vertex)',
+    reasoning: true,
+    input: ['text', 'image'],
+    // Opus 4.8 keeps Opus 4.7 pricing and the 1M context window, and
+    // raises max output to 128k. Adaptive thinking with new 'extra'
+    // (xhigh) and 'max' effort tiers.
+    // See https://www.anthropic.com/news/claude-opus-4-8
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 1000000,
+    maxTokens: 128000,
+  },
+  {
     id: 'claude-opus-4-7@default',
     name: 'Claude Opus 4.7 (Vertex)',
     reasoning: true,

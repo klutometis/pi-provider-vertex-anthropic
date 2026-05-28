@@ -7,12 +7,12 @@ Fork of [`pi-provider-vertex-anthropic`](https://github.com/danielcherubini/pi-p
 
 ## Why this fork exists
 
-This scoped package carries local Vertex/Claude fixes while the upstream pull request is pending. In particular, Claude Opus 4.7 on Vertex requires adaptive thinking:
+This scoped package carries local Vertex/Claude fixes while the upstream pull request is pending. In particular, Claude Opus 4.8 / 4.7 on Vertex require adaptive thinking:
 
 - `thinking.type = "adaptive"`
 - `output_config.effort = "low" | "medium" | "high" | "max"`
 
-rather than the older `thinking.type = "enabled"` payload shape. The fork also registers Claude 4.7 / 4.6-family model metadata and opts 1M-context models into the Anthropic `context-1m-2025-08-07` beta header.
+rather than the older `thinking.type = "enabled"` payload shape. The fork also registers Claude 4.8 / 4.7 / 4.6-family model metadata and opts 1M-context models into the Anthropic `context-1m-2025-08-07` beta header.
 
 This package is intended as a pinned bootstrap dependency for my Pi installs until equivalent support lands upstream.
 
@@ -21,7 +21,7 @@ A [Pi](https://github.com/nichochar/pi) provider plugin that gives you access to
 
 ## Features
 
-- **Claude models** from Opus 4.7 down to Haiku 3, including extended/adaptive thinking
+- **Claude models** from Opus 4.8 down to Haiku 3, including extended/adaptive thinking
 - **Streaming** via Vertex AI's `streamRawPredict` endpoint with full SSE support
 - **Prompt caching** with automatic ephemeral cache control
 - **Multiple auth strategies** -- service account, Application Default Credentials, or the `gcloud` CLI
@@ -105,20 +105,26 @@ To set a Vertex model as your default, add to `~/.pi/agent/settings.json`:
 
 ## Available models
 
-| Model | ID | Thinking | Max output |
-|-------|----|----------|------------|
-| Claude Opus 4.6 | `claude-opus-4-6` | Yes | 64k |
-| Claude Opus 4.5 | `claude-opus-4-5@20251101` | Yes | 64k |
-| Claude Sonnet 4.5 | `claude-sonnet-4-5@20250929` | Yes | 64k |
-| Claude Haiku 4.5 | `claude-haiku-4-5@20251001` | Yes | 64k |
-| Claude 3.5 Sonnet v2 | `claude-3-5-sonnet-v2@20241022` | No | 8k |
-| Claude 3.5 Sonnet | `claude-3-5-sonnet@20240620` | No | 8k |
-| Claude 3.5 Haiku | `claude-3-5-haiku@20241022` | No | 8k |
-| Claude 3 Opus | `claude-3-opus@20240229` | No | 4k |
-| Claude 3 Sonnet | `claude-3-sonnet@20240229` | No | 4k |
-| Claude 3 Haiku | `claude-3-haiku@20240307` | No | 4k |
+| Model | ID | Thinking | Context | Max output |
+|-------|----|----------|---------|------------|
+| Claude Opus 4.8 | `claude-opus-4-8@default` | Yes (adaptive) | 1M | 128k |
+| Claude Opus 4.7 | `claude-opus-4-7@default` | Yes (adaptive) | 1M | 64k |
+| Claude Sonnet 4.6 | `claude-sonnet-4-6@default` | Yes (adaptive) | 1M | 64k |
+| Claude Haiku 4.6 | `claude-haiku-4-6@default` | Yes (adaptive) | 1M | 64k |
+| Claude Opus 4.6 | `claude-opus-4-6` | Yes (adaptive) | 200k | 64k |
+| Claude Opus 4.5 | `claude-opus-4-5@20251101` | Yes | 200k | 64k |
+| Claude Sonnet 4.5 | `claude-sonnet-4-5@20250929` | Yes | 200k | 64k |
+| Claude Haiku 4.5 | `claude-haiku-4-5@20251001` | Yes | 200k | 64k |
+| Claude 3.5 Sonnet v2 | `claude-3-5-sonnet-v2@20241022` | No | 200k | 8k |
+| Claude 3.5 Sonnet | `claude-3-5-sonnet@20240620` | No | 200k | 8k |
+| Claude 3.5 Haiku | `claude-3-5-haiku@20241022` | No | 200k | 8k |
+| Claude 3 Opus | `claude-3-opus@20240229` | No | 200k | 4k |
+| Claude 3 Sonnet | `claude-3-sonnet@20240229` | No | 200k | 4k |
+| Claude 3 Haiku | `claude-3-haiku@20240307` | No | 200k | 4k |
 
-All models support **200k context**, **text + image** input, and **prompt caching**.
+All models support **text + image** input and **prompt caching**. The 4.6+ family
+opts into the Anthropic `context-1m-2025-08-07` beta header automatically when
+the registered `contextWindow` exceeds 200k.
 
 ## Development
 
