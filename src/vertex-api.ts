@@ -10,9 +10,80 @@ import type {
 } from '@mariozechner/pi-ai'
 import { calculateCost, createAssistantMessageEventStream } from '@mariozechner/pi-ai'
 
+import { appendFileSync } from 'node:fs'
+
 import { getAccessToken } from './auth'
 import { buildStreamUrl, resolveConfig } from './config'
 import { convertMessages, convertTools, mapStopReason, sanitizeSurrogates } from './messages'
+
+/**
+ * Opt-in diagnostics. Two independent levels, both off by default (zero
+ * overhead when unset):
+ *
+ *   PI_VERTEX_DEBUG=1            → high-signal lines to stderr
+ *   PI_VERTEX_LOG=/path/log.txt  → high-signal lines appended to a file
+ *   PI_VERTEX_TRACE=1            → ALSO dump every raw SSE event (verbose)
+ *
+ * High-signal (debugLog): request shape, response status, http/SSE errors,
+ * terminal stop_reason, and the per-turn `done` summary. This is enough to
+ * diagnose wrong project/region, bad thinking payloads, oversized bodies,
+ * and swallowed terminal errors.
+ *
+ * Verbose (trace): the full payload of every SSE event — each text /
+ * thinking / tool-call delta and signature. Useful for streaming-level
+ * issues (truncation, ordering, empty deltas) but very noisy (tens of lines
+ * per turn), so it is gated behind its own flag and stays silent otherwise.
+ *
+ * Sinks: trace writes to whatever sink is active. If PI_VERTEX_TRACE is set
+ * without PI_VERTEX_LOG/PI_VERTEX_DEBUG, it falls back to stderr so the flag
+ * works on its own.
+ *
+ * This machinery exists because Vertex/Anthropic stream failures were
+ * previously collapsed into a generic "Unknown error" with no recorded
+ * cause: any unrecognized `stop_reason` mapped to 'error' and the raw reason
+ * was discarded, while mid-stream SSE `error` events were not handled at all.
+ */
+const DEBUG_TO_STDERR = !!process.env.PI_VERTEX_DEBUG
+const DEBUG_LOG_FILE = process.env.PI_VERTEX_LOG
+const TRACE_ENABLED = !!process.env.PI_VERTEX_TRACE
+const DEBUG_ENABLED = DEBUG_TO_STDERR || !!DEBUG_LOG_FILE || TRACE_ENABLED
+// Trace with no explicit sink still needs somewhere to go → default to stderr.
+const STDERR_ENABLED = DEBUG_TO_STDERR || (TRACE_ENABLED && !DEBUG_LOG_FILE)
+
+function emit(event: string, detail?: unknown): void {
+  let line = `[vertex-anthropic ${new Date().toISOString()}] ${event}`
+  if (detail !== undefined) {
+    line += ' ' + (typeof detail === 'string' ? detail : safeStringify(detail))
+  }
+  if (STDERR_ENABLED) console.error(line)
+  if (DEBUG_LOG_FILE) {
+    try {
+      appendFileSync(DEBUG_LOG_FILE, line + '\n')
+    } catch {
+      // Never let diagnostics break the stream.
+    }
+  }
+}
+
+/** High-signal diagnostic line. Active under PI_VERTEX_DEBUG/LOG (or TRACE). */
+function debugLog(event: string, detail?: unknown): void {
+  if (!DEBUG_ENABLED) return
+  emit(event, detail)
+}
+
+/** Verbose per-event trace. Active only under PI_VERTEX_TRACE. */
+function trace(event: string, detail?: unknown): void {
+  if (!TRACE_ENABLED) return
+  emit(event, detail)
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
 
 /**
  * Parse Server-Sent Events from a Vertex AI streaming response.
@@ -227,6 +298,20 @@ export function streamVertexAnthropic(
         headers['anthropic-beta'] = 'context-1m-2025-08-07'
       }
 
+      debugLog('request', {
+        url,
+        model: model.id,
+        vertexModelId,
+        reasoning: options?.reasoning ?? null,
+        thinking: body.thinking ?? null,
+        output_config: body.output_config ?? null,
+        max_tokens: body.max_tokens,
+        messageCount: Array.isArray(body.messages) ? body.messages.length : null,
+        toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+        anthropicBeta: headers['anthropic-beta'] ?? null,
+        approxBodyBytes: JSON.stringify(body).length,
+      })
+
       const response = await fetch(url, {
         method: 'POST',
         headers,
@@ -236,8 +321,10 @@ export function streamVertexAnthropic(
 
       if (!response.ok) {
         const errorText = await response.text()
+        debugLog('http_error', { status: response.status, body: errorText.slice(0, 2000) })
         throw new Error(`Vertex AI error (${response.status}): ${errorText}`)
       }
+      debugLog('response_ok', { status: response.status })
 
       stream.push({ type: 'start', partial: output })
 
@@ -246,8 +333,27 @@ export function streamVertexAnthropic(
       }
       const blocks = output.content as Block[]
 
+      // Stream-lifecycle tracking for diagnostics. Anthropic streams open
+      // with `message_start` and terminate with `message_stop`; a stream that
+      // ends without `message_stop` was cut off (proxy/timeout/server reset),
+      // which is a distinct failure from a real terminal stop_reason.
+      let sawMessageStart = false
+      let sawMessageStop = false
+      let rawStopReason: string | undefined
+
       for await (const event of parseSSE(response)) {
+        // Verbose: full raw event (every delta/signature). Noisy, trace-only.
+        trace('sse', event)
+        // Vertex/Anthropic can emit a terminal SSE `error` event mid-stream
+        // (e.g. overloaded_error, api_error). Previously this fell through
+        // every branch and was silently dropped. Surface it explicitly.
+        if (event.type === 'error') {
+          const payload = event.error ?? event
+          debugLog('sse_error', payload)
+          throw new Error(`Vertex SSE error event: ${safeStringify(payload)}`)
+        }
         if (event.type === 'message_start') {
+          sawMessageStart = true
           const usage = event.message?.usage
           if (usage) {
             output.usage.input = usage.input_tokens || 0
@@ -370,9 +476,16 @@ export function streamVertexAnthropic(
               partial: output,
             })
           }
+        } else if (event.type === 'message_stop') {
+          sawMessageStop = true
         } else if (event.type === 'message_delta') {
           if (event.delta?.stop_reason) {
+            rawStopReason = event.delta.stop_reason
             output.stopReason = mapStopReason(event.delta.stop_reason)
+            debugLog('stop_reason', {
+              raw: rawStopReason,
+              mapped: output.stopReason,
+            })
           }
           if (event.usage) {
             output.usage.output = event.usage.output_tokens || output.usage.output
@@ -390,9 +503,48 @@ export function streamVertexAnthropic(
         throw new Error('Request was aborted')
       }
 
+      // A terminal stop_reason that mapStopReason couldn't classify (e.g.
+      // "refusal", or a stop_reason newer than this fork knows about) lands
+      // here as stopReason === 'error'. Convert it into a real, inspectable
+      // errorMessage instead of pushing a silent done:error that the UI
+      // renders as "Unknown error".
+      if (output.stopReason === 'error') {
+        throw new Error(
+          `Vertex stream stopped with unhandled stop_reason: ${
+            rawStopReason ? `"${rawStopReason}"` : '(none received)'
+          }`,
+        )
+      }
+
+      // Saw the start of a message but never its end → the stream was cut off
+      // before completion (connection reset, proxy timeout, etc.).
+      if (sawMessageStart && !sawMessageStop) {
+        throw new Error(
+          `Vertex stream ended before message_stop (last stop_reason: ${
+            rawStopReason ?? 'none'
+          }, blocks: ${output.content.length})`,
+        )
+      }
+
       // Clean up internal tracking properties
       for (const block of output.content) delete (block as any).index
 
+      debugLog('done', {
+        stopReason: output.stopReason,
+        rawStopReason: rawStopReason ?? null,
+        // Per-block summary so the log shows whether a thinking block was
+        // present and whether it actually carried summarized text/signature
+        // (empty thinking => display 'omitted' / model suppressed summary;
+        //  no thinking block at all => thinking was never requested).
+        blocks: output.content.map((b: any) => ({
+          type: b.type,
+          thinkingChars: typeof b.thinking === 'string' ? b.thinking.length : undefined,
+          sigChars: typeof b.thinkingSignature === 'string' ? b.thinkingSignature.length : undefined,
+          textChars: typeof b.text === 'string' ? b.text.length : undefined,
+        })),
+        requestedThinking: !!(options?.reasoning && model.reasoning),
+        usage: output.usage,
+      })
       stream.push({
         type: 'done',
         reason: output.stopReason as 'stop' | 'length' | 'toolUse',
@@ -406,6 +558,11 @@ export function streamVertexAnthropic(
       }
       output.stopReason = options?.signal?.aborted ? 'aborted' : 'error'
       output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error)
+      debugLog('error', {
+        stopReason: output.stopReason,
+        errorMessage: output.errorMessage,
+        blocks: output.content.map((b: any) => b.type),
+      })
       stream.push({ type: 'error', reason: output.stopReason, error: output })
       stream.end()
     }

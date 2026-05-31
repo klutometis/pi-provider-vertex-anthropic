@@ -1,6 +1,14 @@
-import { describe, it, expect } from 'vitest'
-import { buildRequestBody, useAdaptiveThinking } from '../src/vertex-api'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { buildRequestBody, useAdaptiveThinking, streamVertexAnthropic } from '../src/vertex-api'
 import type { Model, Api, Context } from '@mariozechner/pi-ai'
+
+vi.mock('../src/auth', () => ({
+  getAccessToken: vi.fn(async () => 'test-token'),
+}))
+vi.mock('../src/config', () => ({
+  resolveConfig: () => ({ project: 'test-project', region: 'us-central1' }),
+  buildStreamUrl: () => 'https://example.test/stream',
+}))
 
 function makeModel(id: string, reasoning = true): Model<Api> {
   return {
@@ -19,6 +27,185 @@ function makeModel(id: string, reasoning = true): Model<Api> {
 const baseContext: Context = {
   messages: [{ role: 'user', content: 'hi' }],
 } as Context
+
+/** Build a fake Vertex SSE streaming Response from a list of event objects. */
+function sseResponse(events: any[]): Response {
+  const text = events
+    .map((e) => `event: ${e._eventType || e.type}\ndata: ${JSON.stringify(e)}\n\n`)
+    .join('')
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(text))
+      controller.close()
+    },
+  })
+  return new Response(body, { status: 200 })
+}
+
+async function consume(stream: AsyncIterable<any>): Promise<any[]> {
+  const events: any[] = []
+  for await (const e of stream) events.push(e)
+  return events
+}
+
+const THINKING_SEQUENCE = [
+  { type: 'message_start', message: { usage: { input_tokens: 10, output_tokens: 0 } } },
+  { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'hmm' } },
+  { type: 'content_block_stop', index: 0 },
+]
+
+describe('diagnostic logging levels (PI_VERTEX_DEBUG vs PI_VERTEX_TRACE)', () => {
+  const ENV_KEYS = ['PI_VERTEX_DEBUG', 'PI_VERTEX_LOG', 'PI_VERTEX_TRACE'] as const
+  const saved: Record<string, string | undefined> = {}
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k]
+      else process.env[k] = saved[k]
+    }
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    vi.resetModules()
+  })
+
+  // Re-import the module with env set *before* evaluation, since the level
+  // flags are resolved at module load. Returns captured stderr lines.
+  async function runWithEnv(env: Record<string, string>): Promise<string[]> {
+    for (const k of ENV_KEYS) saved[k] = process.env[k]
+    for (const k of ENV_KEYS) delete process.env[k]
+    Object.assign(process.env, env)
+    vi.resetModules()
+    const lines: string[] = []
+    vi.spyOn(console, 'error').mockImplementation((l?: any) => {
+      lines.push(String(l))
+    })
+    const mod = await import('../src/vertex-api')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          { type: 'message_start', message: { usage: { input_tokens: 1 } } },
+          { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+          { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } },
+          { type: 'content_block_stop', index: 0 },
+          { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },
+          { type: 'message_stop' },
+        ]),
+      ),
+    )
+    await consume(mod.streamVertexAnthropic(makeModel('claude-opus-4-8@default'), baseContext, {} as any))
+    return lines
+  }
+
+  it('emits nothing when all flags are off', async () => {
+    const lines = await runWithEnv({})
+    expect(lines).toHaveLength(0)
+  })
+
+  it('DEBUG emits high-signal lines but NOT per-event sse traces', async () => {
+    const lines = await runWithEnv({ PI_VERTEX_DEBUG: '1' })
+    expect(lines.some((l) => l.includes('] request '))).toBe(true)
+    expect(lines.some((l) => l.includes('] done '))).toBe(true)
+    expect(lines.some((l) => l.includes('] sse '))).toBe(false)
+  })
+
+  it('TRACE additionally emits verbose per-event sse lines', async () => {
+    const lines = await runWithEnv({ PI_VERTEX_TRACE: '1' })
+    expect(lines.some((l) => l.includes('] request '))).toBe(true)
+    const sseLines = lines.filter((l) => l.includes('] sse '))
+    expect(sseLines.length).toBeGreaterThan(1)
+    // Verbose => the full raw event payload is present, not just its type.
+    expect(sseLines.some((l) => l.includes('text_delta'))).toBe(true)
+  })
+})
+
+describe('streamVertexAnthropic error diagnostics', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('surfaces an unhandled terminal stop_reason as a real errorMessage', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          ...THINKING_SEQUENCE,
+          { type: 'message_delta', delta: { stop_reason: 'refusal' }, usage: { output_tokens: 5 } },
+          // intentionally no message_stop
+        ]),
+      ),
+    )
+    const events = await consume(
+      streamVertexAnthropic(makeModel('claude-opus-4-8@default'), baseContext, {
+        reasoning: 'high',
+      } as any),
+    )
+    const err = events.find((e) => e.type === 'error')
+    expect(err).toBeDefined()
+    expect(err.error.stopReason).toBe('error')
+    expect(err.error.errorMessage).toContain('refusal')
+    // The completed thinking block is preserved for inspection.
+    expect(err.error.content.some((b: any) => b.type === 'thinking')).toBe(true)
+  })
+
+  it('surfaces a mid-stream SSE error event', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          { type: 'message_start', message: { usage: { input_tokens: 10 } } },
+          { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } },
+        ]),
+      ),
+    )
+    const events = await consume(
+      streamVertexAnthropic(makeModel('claude-opus-4-8@default'), baseContext, {} as any),
+    )
+    const err = events.find((e) => e.type === 'error')
+    expect(err).toBeDefined()
+    expect(err.error.errorMessage).toContain('overloaded_error')
+  })
+
+  it('flags a stream cut off before message_stop', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => sseResponse(THINKING_SEQUENCE)))
+    const events = await consume(
+      streamVertexAnthropic(makeModel('claude-opus-4-8@default'), baseContext, {
+        reasoning: 'high',
+      } as any),
+    )
+    const err = events.find((e) => e.type === 'error')
+    expect(err).toBeDefined()
+    expect(err.error.errorMessage).toContain('before message_stop')
+  })
+
+  it('completes normally on a well-formed stream (regression)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          ...THINKING_SEQUENCE,
+          { type: 'content_block_start', index: 1, content_block: { type: 'text' } },
+          { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'hello' } },
+          { type: 'content_block_stop', index: 1 },
+          { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } },
+          { type: 'message_stop' },
+        ]),
+      ),
+    )
+    const events = await consume(
+      streamVertexAnthropic(makeModel('claude-opus-4-8@default'), baseContext, {
+        reasoning: 'high',
+      } as any),
+    )
+    expect(events.find((e) => e.type === 'error')).toBeUndefined()
+    const done = events.find((e) => e.type === 'done')
+    expect(done).toBeDefined()
+    expect(done.reason).toBe('stop')
+    expect(done.message.errorMessage).toBeUndefined()
+  })
+})
 
 describe('useAdaptiveThinking', () => {
   it('returns true for 4-6+ claude models', () => {

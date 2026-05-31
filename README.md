@@ -126,6 +126,45 @@ All models support **text + image** input and **prompt caching**. The 4.6+ famil
 opts into the Anthropic `context-1m-2025-08-07` beta header automatically when
 the registered `contextWindow` exceeds 200k.
 
+## Diagnostics
+
+Stream failures from Vertex's Anthropic endpoint are otherwise easy to lose:
+an unrecognized terminal `stop_reason` or a mid-stream SSE `error` event used
+to surface in Pi as a bare `Error: Unknown error`. This provider now records a
+real `errorMessage` in those cases, and offers opt-in logging. All flags are
+off by default (zero overhead when unset).
+
+| Env var | Effect |
+|---------|--------|
+| `PI_VERTEX_DEBUG=1` | High-signal lines to **stderr** |
+| `PI_VERTEX_LOG=/path/log.txt` | High-signal lines appended to a **file** |
+| `PI_VERTEX_TRACE=1` | **Also** dump every raw SSE event (verbose) |
+
+**High-signal** (DEBUG/LOG): request shape (project, region, effort,
+`thinking`/`display`, beta header, body size), response status, HTTP/SSE
+errors, terminal `stop_reason`, and a per-turn `done` summary (block types,
+thinking/signature/text lengths, usage). Enough to spot a wrong
+project/region, a bad thinking payload, an oversized body, or a swallowed
+terminal error.
+
+**Verbose** (TRACE): the full payload of every SSE event — each text,
+thinking, and tool-call delta plus signatures. Noisy (tens of lines per turn)
+but invaluable for streaming-level issues (truncation, ordering, empty
+deltas). `PI_VERTEX_TRACE=1` on its own logs to stderr; combine with
+`PI_VERTEX_LOG` to capture verbose output to a file.
+
+No secrets are logged: the bearer token is never emitted, and prompt/message
+content is summarized by length (high-signal) — only TRACE prints raw model
+output deltas.
+
+```bash
+# High-signal log to a file
+PI_VERTEX_LOG=~/vertex-debug.log pi-vertex -c
+
+# Verbose trace of every SSE event, captured to a file
+PI_VERTEX_LOG=~/vertex-trace.log PI_VERTEX_TRACE=1 pi-vertex -c
+```
+
 ## Development
 
 ```bash
