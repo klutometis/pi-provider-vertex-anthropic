@@ -176,9 +176,16 @@ const ADAPTIVE_EFFORT: Record<string, AdaptiveEffort> = {
  * `claude-opus-4-7@default` that aren't in our registered list.
  */
 export function useAdaptiveThinking(modelId: string): boolean {
-  const match = modelId.match(/claude-(?:opus|sonnet|haiku)-4-(\d+)/)
+  // Match the model family (major) and optional point release (minor):
+  //   claude-opus-4-8   -> major 4, minor 8
+  //   claude-opus-5     -> major 5, minor 0 (5-family drops the minor)
+  const match = modelId.match(/claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?/)
   if (!match) return false
-  return parseInt(match[1], 10) >= 6
+  const major = parseInt(match[1], 10)
+  const minor = match[2] ? parseInt(match[2], 10) : 0
+  // Adaptive thinking landed with the 4-6 family and is standard for 5+.
+  if (major >= 5) return true
+  return major === 4 && minor >= 6
 }
 
 /**

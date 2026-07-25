@@ -218,6 +218,13 @@ describe('useAdaptiveThinking', () => {
     expect(useAdaptiveThinking('claude-haiku-4-10')).toBe(true)
   })
 
+  it('returns true for the 5-family (minor-less ids)', () => {
+    expect(useAdaptiveThinking('claude-opus-5')).toBe(true)
+    expect(useAdaptiveThinking('claude-opus-5@default')).toBe(true)
+    expect(useAdaptiveThinking('claude-opus-5-1@default')).toBe(true)
+    expect(useAdaptiveThinking('claude-sonnet-5@default')).toBe(true)
+  })
+
   it('returns false for 4-5 and older claude models', () => {
     expect(useAdaptiveThinking('claude-opus-4-5')).toBe(false)
     expect(useAdaptiveThinking('claude-opus-4-5@20251101')).toBe(false)

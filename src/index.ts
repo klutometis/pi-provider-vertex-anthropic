@@ -39,12 +39,14 @@ export default function(pi: ExtensionAPI) {
           const known = VERTEX_MODELS.find((m) => m.id === id)
           if (known) return known
           // Best-effort stub for unknown ids (e.g. future Claude releases
-          // passed via --model). 4-6+ Claude models are reasoning-capable
-          // and ship with 1M context; older models cap at 200k. We err on
-          // the larger side for newer ids so pi's auto-compact threshold
-          // doesn't trip prematurely.
-          const newer = /claude-(?:opus|sonnet|haiku)-4-(\d+)/.exec(id)
-          const isNewer = newer ? parseInt(newer[1], 10) >= 6 : false
+          // passed via --model). 4-6+ and all 5+ Claude models are
+          // reasoning-capable and ship with 1M context; older models cap at
+          // 200k. We err on the larger side for newer ids so pi's
+          // auto-compact threshold doesn't trip prematurely.
+          const newer = /claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?/.exec(id)
+          const major = newer ? parseInt(newer[1], 10) : 0
+          const minor = newer && newer[2] ? parseInt(newer[2], 10) : 0
+          const isNewer = major >= 5 || (major === 4 && minor >= 6)
           return {
             id,
             name: id,

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/package.json",
   "name": "@klutometis/pi-provider-vertex-anthropic",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Pi agent extension for Claude models via Google Cloud Vertex AI",
   "type": "module",
   "main": "./src/index.ts",

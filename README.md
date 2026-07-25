@@ -7,12 +7,12 @@ Fork of [`pi-provider-vertex-anthropic`](https://github.com/danielcherubini/pi-p
 
 ## Why this fork exists
 
-This scoped package carries local Vertex/Claude fixes while the upstream pull request is pending. In particular, Claude Opus 4.8 / 4.7 on Vertex require adaptive thinking:
+This scoped package carries local Vertex/Claude fixes while the upstream pull request is pending. In particular, Claude Opus 5 / 4.8 / 4.7 on Vertex require adaptive thinking:
 
 - `thinking.type = "adaptive"`
 - `output_config.effort = "low" | "medium" | "high" | "max"`
 
-rather than the older `thinking.type = "enabled"` payload shape. The fork also registers Claude 4.8 / 4.7 / 4.6-family model metadata and opts 1M-context models into the Anthropic `context-1m-2025-08-07` beta header.
+rather than the older `thinking.type = "enabled"` payload shape. The fork also registers Claude 5 / 4.8 / 4.7 / 4.6-family model metadata and opts 1M-context models into the Anthropic `context-1m-2025-08-07` beta header.
 
 This package is intended as a pinned bootstrap dependency for my Pi installs until equivalent support lands upstream.
 
@@ -21,7 +21,7 @@ A [Pi](https://github.com/nichochar/pi) provider plugin that gives you access to
 
 ## Features
 
-- **Claude models** from Opus 4.8 down to Haiku 3, including extended/adaptive thinking
+- **Claude models** from Opus 5 down to Haiku 3, including extended/adaptive thinking
 - **Streaming** via Vertex AI's `streamRawPredict` endpoint with full SSE support
 - **Prompt caching** with automatic ephemeral cache control
 - **Multiple auth strategies** -- service account, Application Default Credentials, or the `gcloud` CLI
@@ -107,6 +107,7 @@ To set a Vertex model as your default, add to `~/.pi/agent/settings.json`:
 
 | Model | ID | Thinking | Context | Max output |
 |-------|----|----------|---------|------------|
+| Claude Opus 5 | `claude-opus-5@default` | Yes (adaptive) | 1M | 128k |
 | Claude Opus 4.8 | `claude-opus-4-8@default` | Yes (adaptive) | 1M | 128k |
 | Claude Opus 4.7 | `claude-opus-4-7@default` | Yes (adaptive) | 1M | 64k |
 | Claude Sonnet 4.6 | `claude-sonnet-4-6@default` | Yes (adaptive) | 1M | 64k |
