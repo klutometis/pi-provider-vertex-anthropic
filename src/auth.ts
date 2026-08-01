@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { homedir, platform } from 'node:os'
 import { createSign } from 'node:crypto'
 import { exec } from './shell'
@@ -9,12 +9,6 @@ const GOOGLE_CLOUD_CLI_PATHS = [
   '/usr/local/bin/gcloud',
   '/usr/bin/gcloud',
   join(homedir(), 'google-cloud-sdk', 'bin', 'gcloud'),
-  ...(platform() === 'win32' ? [
-    'C:\\Program Files (x86)\\Google\\Cloud SDK\\google-cloud-sdk\\bin\\gcloud.cmd',
-    'C:\\Program Files\\Google\\Cloud SDK\\google-cloud-sdk\\bin\\gcloud.cmd',
-  ] : []),
-  'gcloud',
-  ...(platform() === 'win32' ? ['gcloud.cmd'] : []),
 ]
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
@@ -25,10 +19,45 @@ const ADC_PATH = join(homedir(), '.config', 'gcloud', 'application_default_crede
 let cachedToken: { token: string; expiresAt: number } | null = null
 
 /**
- * Find the Google Cloud CLI binary by searching common locations.
+ * Find gcloud in the system PATH using the shell.
+ * Works cross-platform: uses 'where' on Windows, 'which' on Unix-like systems.
+ * Returns the first match found or undefined.
+ */
+function findGcloudInPath(): string | undefined {
+  try {
+    const findCmd = platform() === 'win32' ? 'where' : 'which'
+    const result = spawnSync(findCmd, ['gcloud'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    })
+    if (result.status === 0 && result.stdout) {
+      const paths = (result.stdout as string).split('\n').filter(Boolean)
+      return paths[0]?.trim()
+    }
+  } catch {
+    // Ignore errors
+  }
+  return undefined
+}
+
+/**
+ * Find the Google Cloud CLI binary by searching common locations and system PATH.
  * Returns undefined if no working CLI is found.
  */
 export function findGoogleCloudCliPath(): string | undefined {
+  // First, try the system PATH (most likely to work)
+  const pathResult = findGcloudInPath()
+  if (pathResult) {
+    try {
+      const result = spawnSync(pathResult, ['version'], { stdio: 'ignore', timeout: 2000 })
+      if (result.status === 0) return pathResult
+    } catch {
+      // Fall through to hardcoded paths
+    }
+  }
+
+  // Fall back to hardcoded common installation paths
   for (const path of GOOGLE_CLOUD_CLI_PATHS) {
     try {
       const result = spawnSync(path, ['version'], { stdio: 'ignore', timeout: 2000 })
