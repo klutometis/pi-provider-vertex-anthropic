@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
-import { join, resolve } from 'node:path'
+import { spawnSync, execSync } from 'node:child_process'
+import { join } from 'node:path'
 import { homedir, platform } from 'node:os'
 import { createSign } from 'node:crypto'
 import { exec } from './shell'
@@ -13,28 +13,72 @@ const GOOGLE_CLOUD_CLI_PATHS = [
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
-const ADC_PATH = join(homedir(), '.config', 'gcloud', 'application_default_credentials.json')
+
+/** Resolve the ADC file path (Windows uses %APPDATA%, Unix uses ~/.config). */
+function getAdcPath(): string {
+  if (platform() === 'win32' && process.env.APPDATA) {
+    return join(process.env.APPDATA, 'gcloud', 'application_default_credentials.json')
+  }
+  return join(homedir(), '.config', 'gcloud', 'application_default_credentials.json')
+}
 
 // In-memory token cache
 let cachedToken: { token: string; expiresAt: number } | null = null
 
 /**
+ * Verify that a gcloud command/path is executable.
+ * On Windows, .cmd files and PATH lookups require cmd.exe or shell mode.
+ */
+function isGcloudWorking(command: string): boolean {
+  try {
+    if (platform() === 'win32') {
+      const result = spawnSync('cmd.exe', ['/c', command, 'version'], {
+        stdio: 'ignore',
+        timeout: 5000,
+        env: process.env,
+      })
+      return result.status === 0
+    }
+    const result = spawnSync(command, ['version'], {
+      stdio: 'ignore',
+      timeout: 5000,
+      env: process.env,
+    })
+    return result.status === 0
+  } catch {
+    return false
+  }
+}
+
+/**
  * Find gcloud in the system PATH using the shell.
  * Works cross-platform: uses 'where' on Windows, 'which' on Unix-like systems.
- * Returns the first match found or undefined.
+ * Returns a command string that can be executed, or undefined.
  */
 function findGcloudInPath(): string | undefined {
   try {
-    const findCmd = platform() === 'win32' ? 'where' : 'which'
-    const result = spawnSync(findCmd, ['gcloud'], {
+    const findCmd = platform() === 'win32' ? 'where gcloud' : 'which gcloud'
+    const output = execSync(findCmd, {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 2000,
-    })
-    if (result.status === 0 && result.stdout) {
-      const paths = (result.stdout as string).split('\n').filter(Boolean)
-      return paths[0]?.trim()
+      env: process.env,
+      shell: true,
+    }).trim()
+    if (!output) return undefined
+
+    const paths = output.split(/\r?\n/).map((p) => p.trim()).filter(Boolean)
+
+    if (platform() === 'win32') {
+      // `where` lists the bash script before gcloud.cmd; prefer the .cmd entry.
+      const cmdPath = paths.find((p) => p.toLowerCase().endsWith('.cmd'))
+      if (cmdPath && isGcloudWorking(cmdPath)) return cmdPath
+      if (isGcloudWorking('gcloud')) return 'gcloud'
+      return undefined
     }
+
+    const first = paths[0]
+    if (first && isGcloudWorking(first)) return first
   } catch {
     // Ignore errors
   }
@@ -46,25 +90,11 @@ function findGcloudInPath(): string | undefined {
  * Returns undefined if no working CLI is found.
  */
 export function findGoogleCloudCliPath(): string | undefined {
-  // First, try the system PATH (most likely to work)
   const pathResult = findGcloudInPath()
-  if (pathResult) {
-    try {
-      const result = spawnSync(pathResult, ['version'], { stdio: 'ignore', timeout: 2000 })
-      if (result.status === 0) return pathResult
-    } catch {
-      // Fall through to hardcoded paths
-    }
-  }
+  if (pathResult) return pathResult
 
-  // Fall back to hardcoded common installation paths
   for (const path of GOOGLE_CLOUD_CLI_PATHS) {
-    try {
-      const result = spawnSync(path, ['version'], { stdio: 'ignore', timeout: 2000 })
-      if (result.status === 0) return path
-    } catch {
-      // Try next path
-    }
+    if (isGcloudWorking(path)) return path
   }
   return undefined
 }
@@ -117,10 +147,11 @@ async function getServiceAccountToken(): Promise<string | null> {
  * Reads the refresh token from the Google Cloud ADC file.
  */
 async function getADCToken(): Promise<string | null> {
-  if (!existsSync(ADC_PATH)) return null
+  const adcPath = getAdcPath()
+  if (!existsSync(adcPath)) return null
 
   try {
-    const creds = JSON.parse(readFileSync(ADC_PATH, 'utf-8'))
+    const creds = JSON.parse(readFileSync(adcPath, 'utf-8'))
     if (!creds.client_id || !creds.client_secret || !creds.refresh_token) return null
 
     const response = await fetch(TOKEN_ENDPOINT, {
@@ -159,7 +190,7 @@ export function getGoogleCloudCliToken(cliPath?: string): string {
 /**
  * Get a valid access token, trying strategies in order:
  *  1. Service account (GOOGLE_APPLICATION_CREDENTIALS)
- *  2. Application Default Credentials (~/.config/gcloud/application_default_credentials.json)
+ *  2. Application Default Credentials (%APPDATA%/gcloud on Windows, ~/.config/gcloud on Unix)
  *  3. Google Cloud CLI (gcloud auth print-access-token)
  *
  * Tokens are cached in memory and refreshed at 55 minutes.
