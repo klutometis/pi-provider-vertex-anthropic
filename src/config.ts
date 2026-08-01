@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 
 const AUTH_PATH = join(homedir(), '.pi', 'agent', 'auth.json')
-const DEFAULT_REGION = 'us-east5'
+const DEFAULT_REGION = 'global'
 
 export interface PersistedCredentials {
   project?: string
@@ -69,6 +69,50 @@ export function resolveRegion(persisted?: PersistedCredentials): string {
   )
 }
 
+/** Regional fallbacks when the default region is `global` and a model 404s there. */
+export const GLOBAL_MODEL_FALLBACK_REGIONS = [
+  'us-east5',
+  'us-central1',
+  'europe-west1',
+  'us-east4',
+] as const
+
+/**
+ * Build possible VERTEX_REGION_* env var names for a model id (Claude Code compatible).
+ */
+export function vertexRegionEnvKeys(modelId: string): string[] {
+  const base = modelId.split('@')[0]
+  const keys = [`VERTEX_REGION_${base.replace(/-/g, '_').toUpperCase()}`]
+
+  const versioned = /^claude-(opus|sonnet|haiku)-(\d+)-(\d+)$/.exec(base)
+  if (versioned) {
+    const [, family, major, minor] = versioned
+    keys.push(`VERTEX_REGION_CLAUDE_${major}_${minor}_${family.toUpperCase()}`)
+    keys.push(`VERTEX_REGION_CLAUDE_${major}_${minor}_${family}`)
+  }
+
+  const majorOnly = /^claude-(opus|sonnet|haiku)-(\d+)$/.exec(base)
+  if (majorOnly) {
+    const [, family, major] = majorOnly
+    keys.push(`VERTEX_REGION_CLAUDE_${major}_${family.toUpperCase()}`)
+    keys.push(`VERTEX_REGION_CLAUDE_${major}_${family}`)
+  }
+
+  return keys
+}
+
+/**
+ * Resolve the Vertex region for a specific model.
+ * Checks VERTEX_REGION_* overrides (same as Claude Code), then the default region.
+ */
+export function resolveModelRegion(modelId: string, defaultRegion: string): string {
+  for (const key of vertexRegionEnvKeys(modelId)) {
+    const value = process.env[key]?.trim()
+    if (value) return value
+  }
+  return defaultRegion
+}
+
 /**
  * Build the Vertex AI endpoint hostname.
  * The `global` region uses `aiplatform.googleapis.com` without a region prefix.
@@ -80,11 +124,23 @@ export function buildEndpointHost(region: string): string {
 }
 
 /**
+ * Build a regional Vertex AI model action URL (streamRawPredict, countTokens, etc.).
+ */
+export function buildModelActionUrl(
+  region: string,
+  project: string,
+  modelId: string,
+  action: string,
+): string {
+  const host = buildEndpointHost(region)
+  return `https://${host}/v1/projects/${project}/locations/${region}/publishers/anthropic/models/${encodeURIComponent(modelId)}:${action}`
+}
+
+/**
  * Build the full Vertex AI streamRawPredict URL for a given model.
  */
 export function buildStreamUrl(region: string, project: string, modelId: string): string {
-  const host = buildEndpointHost(region)
-  return `https://${host}/v1/projects/${project}/locations/${region}/publishers/anthropic/models/${modelId}:streamRawPredict`
+  return buildModelActionUrl(region, project, modelId, 'streamRawPredict')
 }
 
 /**
