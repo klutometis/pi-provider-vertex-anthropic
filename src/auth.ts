@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, platform } from 'node:os'
 import { createSign } from 'node:crypto'
 import { exec } from './shell'
 
@@ -9,7 +9,12 @@ const GOOGLE_CLOUD_CLI_PATHS = [
   '/usr/local/bin/gcloud',
   '/usr/bin/gcloud',
   join(homedir(), 'google-cloud-sdk', 'bin', 'gcloud'),
+  ...(platform() === 'win32' ? [
+    'C:\\Program Files (x86)\\Google\\Cloud SDK\\google-cloud-sdk\\bin\\gcloud.cmd',
+    'C:\\Program Files\\Google\\Cloud SDK\\google-cloud-sdk\\bin\\gcloud.cmd',
+  ] : []),
   'gcloud',
+  ...(platform() === 'win32' ? ['gcloud.cmd'] : []),
 ]
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
