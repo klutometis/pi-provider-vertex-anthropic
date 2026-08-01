@@ -73,8 +73,8 @@ describe('resolveRegion', () => {
     expect(resolveRegion({ region: 'us-central1' })).toBe('us-central1')
   })
 
-  it('defaults to us-east5', () => {
-    expect(resolveRegion()).toBe('us-east5')
+  it('defaults to global', () => {
+    expect(resolveRegion()).toBe('global')
   })
 })
 

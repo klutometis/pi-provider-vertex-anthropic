@@ -5,7 +5,8 @@ import type { ExtensionAPI } from '@mariozechner/pi-coding-agent'
 
 import { findGoogleCloudCliPath, getGoogleCloudCliToken } from './auth'
 import { buildEndpointHost, resolveConfig } from './config'
-import { API_NAME, PROVIDER_NAME, VERTEX_MODELS } from './models'
+import { discoverVertexModels } from './model-discovery'
+import { API_NAME, PROVIDER_NAME, VERTEX_MODELS, type VertexModel } from './models'
 import { streamVertexAnthropic } from './vertex-api'
 import { exec, spawn } from './shell'
 import { collectPreRegisterModels } from './pre-register'
@@ -20,9 +21,43 @@ const REGION_CHOICES: Record<string, string> = {
   '5': 'asia-southeast1',
 }
 
-export default function(pi: ExtensionAPI) {
+function stubModelForId(id: string, catalog: readonly VertexModel[]): VertexModel {
+  const known = catalog.find((m) => m.id === id)
+  if (known) return known
+  const newer = /claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?/.exec(id)
+  const major = newer ? parseInt(newer[1], 10) : 0
+  const minor = newer && newer[2] ? parseInt(newer[2], 10) : 0
+  const isNewer = major >= 5 || (major === 4 && minor >= 6)
+  return {
+    id,
+    name: id,
+    reasoning: isNewer,
+    input: ['text', 'image'],
+    contextWindow: isNewer ? 1000000 : 200000,
+    maxTokens: isNewer ? 64000 : 8192,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  }
+}
+
+export default async function(pi: ExtensionAPI) {
   const config = resolveConfig()
   const googleCloudCli = findGoogleCloudCliPath()
+  const discovery = await discoverVertexModels()
+  const initialModels = discovery.ok ? discovery.models : VERTEX_MODELS
+  if (!discovery.ok) {
+    console.warn(`[vertex-anthropic] ${discovery.error} Using bundled model catalog.`)
+  }
+  let currentModels = initialModels
+  let lastRefresh:
+    | { ok: true; count: number; project: string; region: string }
+    | { ok: false; error: string } = discovery.ok
+    ? {
+        ok: true,
+        count: discovery.models.length,
+        project: discovery.project,
+        region: discovery.region,
+      }
+    : { ok: false, error: discovery.error }
 
   // Synchronous pre-registration to prevent race condition with scoped models
   try {
@@ -35,18 +70,7 @@ export default function(pi: ExtensionAPI) {
         baseUrl: `https://${buildEndpointHost(config.region)}`,
         api: API_NAME,
         apiKey: 'vertex-anthropic',
-        models: modelIds.map((id) => {
-          const known = VERTEX_MODELS.find((m) => m.id === id)
-          return known || {
-            id,
-            name: id,
-            reasoning: false,
-            input: ['text', 'image'] as ('text' | 'image')[],
-            contextWindow: 200000,
-            maxTokens: 8192,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          }
-        }),
+        models: modelIds.map((id) => stubModelForId(id, currentModels)),
         streamSimple: streamVertexAnthropic,
       })
     }
@@ -297,8 +321,48 @@ export default function(pi: ExtensionAPI) {
       },
     },
 
-    models: VERTEX_MODELS,
+    models: currentModels,
+    async refreshModels(context) {
+      if (context.signal?.aborted) return currentModels
+      const result = await discoverVertexModels({ signal: context.signal })
+      if (!result.ok) {
+        lastRefresh = { ok: false, error: result.error }
+        throw new Error(result.error)
+      }
+      currentModels = result.models
+      lastRefresh = {
+        ok: true,
+        count: result.models.length,
+        project: result.project,
+        region: result.region,
+      }
+      return result.models
+    },
     streamSimple: streamVertexAnthropic,
   })
 
+  pi.registerCommand('vertex-anthropic-refresh-models', {
+    description:
+      'Refresh the Vertex Anthropic model catalog from your GCP project and region',
+    handler: async (_args, ctx) => {
+      try {
+        await ctx.modelRegistry.refresh()
+        if (!ctx.hasUI) return
+        if (lastRefresh.ok) {
+          ctx.ui.notify(
+            `vertex-anthropic: refreshed ${lastRefresh.count} models for ${lastRefresh.project} (${lastRefresh.region})`,
+            'info',
+          )
+        } else {
+          ctx.ui.notify(`vertex-anthropic refresh failed: ${lastRefresh.error}`, 'error')
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        lastRefresh = { ok: false, error: message }
+        if (ctx.hasUI) {
+          ctx.ui.notify(`vertex-anthropic refresh failed: ${message}`, 'error')
+        }
+      }
+    },
+  })
 }

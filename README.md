@@ -7,7 +7,8 @@ A [Pi](https://github.com/nichochar/pi) provider plugin that gives you access to
 
 ## Features
 
-- **10 Claude models** from Opus 4.6 down to Haiku 3, including extended thinking
+- **Dynamic model discovery** -- probes your GCP project/region for callable Claude models (same `countTokens` strategy as Claude Code)
+- **`/vertex-anthropic-refresh-models`** -- manually refresh the model list after access or region changes
 - **Streaming** via Vertex AI's `streamRawPredict` endpoint with full SSE support
 - **Prompt caching** with automatic ephemeral cache control
 - **Multiple auth strategies** -- service account, Application Default Credentials, or the `gcloud` CLI
@@ -58,7 +59,18 @@ You can also configure the provider entirely through environment variables. The 
 | 2 | `VERTEX_LOCATION` | Opencode |
 | 3 | `VERTEXAI_LOCATION` | Opencode (alternative) |
 | 4 | *(persisted from `/login`)* | |
-| 5 | `us-east5` *(default)* | |
+| 5 | `global` *(default)* | |
+
+**Per-model region overrides** (optional, Claude Code compatible)
+
+When `CLOUD_ML_REGION=global`, some models only exist in specific regions. Set overrides like Claude Code does:
+
+| Example variable | Purpose |
+|------------------|---------|
+| `VERTEX_REGION_CLAUDE_HAIKU_4_5` | Route Haiku 4.5 to a regional endpoint (e.g. `us-east5`) |
+| `VERTEX_REGION_CLAUDE_4_6_SONNET` | Route Sonnet 4.6 to a regional endpoint |
+
+Discovery and inference both respect these variables.
 
 **Authentication**
 
@@ -89,7 +101,23 @@ To set a Vertex model as your default, add to `~/.pi/agent/settings.json`:
 }
 ```
 
+### Refreshing the model list
+
+On startup, the provider probes candidate Claude models in your configured project and region. Models blocked by org policy or unavailable in that region are omitted.
+
+To refresh after you enable new models in Model Garden, change region, or update org policy:
+
+```
+/vertex-anthropic-refresh-models
+```
+
+Pi updates the `vertex-anthropic` provider catalog immediately. A notification shows how many models were found and which project/region was used.
+
+If discovery fails (no project configured, auth error), the bundled static catalog in `models.ts` is used as a fallback.
+
 ## Available models
+
+The table below is the **bundled fallback catalog**. At runtime, the provider prefers models discovered from your GCP project. Your actual picker may list fewer models depending on region, org policy, and Model Garden access.
 
 | Model | ID | Thinking | Max output |
 |-------|----|----------|------------|
@@ -127,11 +155,12 @@ npm test
 ```
 src/
   index.ts          Extension entry point, provider registration, /login flow
+  model-discovery.ts  Live model probing and refreshModels integration
   vertex-api.ts     SSE streaming against Vertex AI's streamRawPredict
   messages.ts       Message transformation and Anthropic API conversion
   auth.ts           Token acquisition (service account, ADC, gcloud CLI)
   config.ts         Environment variable resolution and endpoint building
-  models.ts         Model definitions and provider constants
+  models.ts         Fallback model catalog and provider constants
   pre-register.ts   Synchronous model ID collection for pre-registration
   shell.ts          Safe shell execution (spawn with args arrays)
 ```
